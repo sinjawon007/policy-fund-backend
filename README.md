@@ -1,8 +1,13 @@
-# 정책자금 AI 비서 백엔드 (Vercel)
+# policy-fund-backend (Vercel Serverless)
 
-## 엔드포인트
+## Endpoints
 - POST /api/chat
-- POST /api/blog
+  - body: { "message": "..." }
+  - return: { "reply": "..." }
 
-## 환경변수
-OPENAI_API_KEY
+- POST /api/blog
+  - body: { "topic": "..." }
+  - return: { "content": "..." }
+
+## Required Env
+- OPENAI_API_KEY
