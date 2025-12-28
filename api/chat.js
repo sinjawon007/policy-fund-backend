@@ -1,53 +1,50 @@
 // /api/chat.js
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-function setCors(res) {
+module.exports = async function handler(req, res) {
+  // 1. 통신 보안 설정 (CORS)
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-module.exports = async function handler(req, res) {
-  setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   try {
+    // 2. 환경변수에서 키 가져오기
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: "GEMINI_API_KEY is missing" });
+    if (!apiKey) throw new Error("GEMINI_API_KEY가 설정되지 않았습니다.");
+
+    // 3. 질문 내용 가져오기
+    let body = req.body;
+    if (typeof body === "string") {
+        try { body = JSON.parse(body); } catch(e) {}
     }
+    const userMessage = body?.message || body?.topic;
 
-    // body 파싱 (Vercel에서 string으로 들어오는 경우 대비)
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
-    const message = body?.message?.trim();
-    if (!message) return res.status(400).json({ error: "message required" });
+    if (!userMessage) throw new Error("질문 내용이 없습니다.");
 
+    // 4. Gemini 모델 준비 (환경변수에 설정한 모델 사용)
     const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-1.5-flash" });
 
-    // ✅ 가장 호환 잘 되는 기본 모델 (안 되면 여기만 바꾸면 됨)
-    // "gemini-1.5-flash" 또는 "gemini-1.5-pro"가 보통 정상입니다.
-    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-    const model = genAI.getGenerativeModel({ model: modelName });
-
-    const system = [
-      "너는 '정책자금' 상담을 돕는 전문 AI 비서다.",
-      "답변은 한국어로, 항목/불릿으로 핵심부터 정리한다.",
-      "마지막 줄에 반드시: ⚠️ 정확한 정보는 공고를 꼭 확인하세요",
-    ].join("\n");
-
-    // ✅ Gemini 권장: generateContent에 system+user를 한 프롬프트로 넣기
-    const prompt = `SYSTEM:\n${system}\n\nUSER:\n${message}`;
+    // 5. AI에게 질문하기
+    const prompt = `당신은 소상공인과 중소기업을 돕는 '정책자금 전문 AI 비서'입니다. 
+    질문에 대해 한국어로 친절하고 전문적으로 답변하세요.
+    
+    질문: ${userMessage}`;
 
     const result = await model.generateContent(prompt);
-    const reply = result?.response?.text?.() || "";
+    const response = await result.response;
+    const text = response.text();
 
-    return res.status(200).json({ reply });
-  } catch (e) {
-    console.error("Gemini error:", e);
-    return res.status(500).json({
-      error: "Gemini API error",
-      detail: e?.message || String(e),
+    // 6. 결과 보내기
+    return res.status(200).json({ reply: text, content: text });
+
+  } catch (error) {
+    console.error("Gemini Error:", error);
+    return res.status(200).json({ 
+      error: "AI 오류", 
+      reply: "죄송합니다. 잠시 후 다시 시도해주세요. (" + error.message + ")" 
     });
   }
 };
