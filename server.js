@@ -3,7 +3,12 @@ const cors = require('cors');
 const app = express();
 
 // 환경변수에서 API 키 가져오기
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'YOUR_API_KEY_HERE';
+const OpenAI = require("openai");
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 const PORT = process.env.PORT || 3000;
 
 // 미들웨어 설정
@@ -31,7 +36,7 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: '메시지를 입력해주세요' });
     }
 
-    // Claude API 호출
+    // open AI API 호출
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
