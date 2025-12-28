@@ -28,7 +28,7 @@ module.exports = async function handler(req, res) {
     const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-1.5-flash" });
 
     // 5. AI에게 질문하기
-    const prompt = `당신은 소상공인과 중소기업을 돕는 '정책자금 전문 AI 비서'입니다. 
+    const prompt = `당신은 소상공인과 중소기업을 돕는 '정책자금 전문 스마트 AI 비서'입니다. 
     질문에 대해 한국어로 친절하고 전문적으로 답변하세요.
     
     질문: ${userMessage}`;
