@@ -1,24 +1,22 @@
 # 정책자금 AI 비서 백엔드 (OpenAI)
 
-Node.js Express 기반 백엔드 서버로, OpenAI API를 안전하게 호출합니다.
-(프론트엔드에 API Key가 노출되지 않도록 서버에서만 호출)
+Express 기반 백엔드 서버입니다.
 
-## ✅ 엔드포인트
-- GET `/` : 서버 상태 확인
-- POST `/api/chat` : 정책자금 AI 채팅
-- POST `/api/blog` : 정책자금 블로그 글 생성
+## 엔드포인트
+- `GET /` : 서버 상태
+- `POST /api/chat` : AI 채팅
+- `POST /api/blog` : AI 블로그 작성
 
-## ✅ Vercel 환경변수 설정
-Vercel → Project → Settings → Environment Variables 에 아래를 추가하세요.
+> `GET /api/chat` 로 브라우저에서 접속하면 `Cannot GET` 또는 405가 정상입니다.  
+> 반드시 POST로 호출해야 합니다.
 
-- `OPENAI_API_KEY` = (본인 키)
-- `OPENAI_MODEL` = gpt-4o-mini (권장, 선택)
+## 환경변수 (Vercel)
+- `OPENAI_API_KEY` (필수)
+- `OPENAI_MODEL` (기본: gpt-5-mini)
+- `OPENAI_REASONING_EFFORT` (low|medium|high)
+- `FRONTEND_ORIGIN` (CORS 허용 도메인)
 
-저장 후 **Redeploy** 해야 반영됩니다.
-
-## ✅ 로컬 실행
+## 로컬 실행
 ```bash
 npm install
-cp env.example .env
-# .env에 OPENAI_API_KEY 입력
-npm start
+OPENAI_API_KEY=... npm start
