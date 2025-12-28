@@ -1,47 +1,59 @@
-/**
- * policy-fund-backend (Express)
- * - GET  /            : health
- * - POST /api/chat     : chat (OpenAI Responses API)
- * - POST /api/blog     : blog writing (OpenAI Responses API)
- *
- * IMPORTANT
- * - /api/chat 은 POST 전용입니다. 브라우저 주소창은 GET이라 "Cannot GET"이 정상입니다.
- */
+// server.js
+// Express API server for Vercel
+// Endpoints:
+//   GET  /        -> health
+//   POST /api/chat -> policy Q&A
+//   POST /api/blog -> blog draft
 
 const express = require("express");
 const cors = require("cors");
 
 const app = express();
 
-/** ====== ENV ====== */
+// ---------- env ----------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini"; // 빠르고 저렴한 기본값
-const OPENAI_REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT || "medium"; // low|medium|high
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
+const PORT = process.env.PORT || 3000;
 
-/** ====== MIDDLEWARE ====== */
+// Allowed origins (comma-separated). Example:
+// ALLOWED_ORIGINS=https://sinjawon007.imweb.me,http://localhost:3000
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// ---------- middleware ----------
+app.use(express.json({ limit: "1mb" }));
+
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN,
+    origin: function (origin, cb) {
+      // allow non-browser tools (curl/postman) with no origin
+      if (!origin) return cb(null, true);
+      if (ALLOWED_ORIGINS.includes("*")) return cb(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS: " + origin));
+    },
     credentials: false,
   })
 );
-app.use(express.json({ limit: "1mb" }));
 
-/** ====== HELPERS ====== */
-function requireApiKey() {
+// ---------- helpers ----------
+function requireKey() {
   if (!OPENAI_API_KEY) {
-    const err = new Error(
-      "OPENAI_API_KEY 가 설정되지 않았습니다. (Vercel > Project > Settings > Environment Variables)"
-    );
-    err.statusCode = 500;
-    throw err;
+    return {
+      ok: false,
+      status: 500,
+      body: {
+        error:
+          "OPENAI_API_KEY is missing. Set it in Vercel Project Settings → Environment Variables, then Redeploy.",
+      },
+    };
   }
+  return { ok: true };
 }
 
-async function callOpenAIResponses({ input, max_output_tokens = 800 }) {
-  requireApiKey();
-
+async function callOpenAIResponses({ input, temperature = 0.7 }) {
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -50,30 +62,45 @@ async function callOpenAIResponses({ input, max_output_tokens = 800 }) {
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
-      reasoning: { effort: OPENAI_REASONING_EFFORT },
       input,
-      max_output_tokens,
+      temperature,
     }),
   });
 
-  const data = await res.json();
-
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg =
       data?.error?.message ||
-      `OpenAI API error (status ${res.status})`;
+      data?.message ||
+      `OpenAI API error (HTTP ${res.status})`;
     const err = new Error(msg);
-    err.statusCode = 500;
-    err.detail = data;
+    err.status = res.status;
+    err.data = data;
     throw err;
   }
 
-  // Responses API는 output_text에 최종 텍스트가 들어옵니다.
-  const text = data.output_text || "";
-  return { text, raw: data };
+  // Try to extract text safely
+  // Many responses include output_text convenience field on some SDKs,
+  // but raw REST returns structured output. We'll extract common fields.
+  let text = "";
+
+  // Some responses may have: data.output[0].content[0].text
+  if (Array.isArray(data.output) && data.output.length > 0) {
+    const first = data.output[0];
+    if (Array.isArray(first.content) && first.content.length > 0) {
+      const c0 = first.content[0];
+      text = c0?.text || c0?.value || "";
+    }
+  }
+
+  // Fallbacks
+  if (!text && typeof data.output_text === "string") text = data.output_text;
+  if (!text && typeof data?.text === "string") text = data.text;
+
+  return { raw: data, text: text || "" };
 }
 
-/** ====== ROUTES ====== */
+// ---------- routes ----------
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -82,133 +109,119 @@ app.get("/", (req, res) => {
   });
 });
 
-// (옵션) GET으로 들어오면 친절히 안내
-app.get("/api/chat", (req, res) => {
-  res.status(405).json({
-    error: "Method Not Allowed",
-    hint: "POST /api/chat 로 JSON { message: '...' } 를 보내야 합니다.",
-  });
-});
-
-app.get("/api/blog", (req, res) => {
-  res.status(405).json({
-    error: "Method Not Allowed",
-    hint: "POST /api/blog 로 JSON { topic/title/... } 를 보내야 합니다.",
-  });
-});
-
-/**
- * POST /api/chat
- * body: { message: string }
- */
+// Q&A chat
 app.post("/api/chat", async (req, res) => {
   try {
-    const { message } = req.body || {};
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "message 를 입력해주세요." });
+    const keyCheck = requireKey();
+    if (!keyCheck.ok) return res.status(keyCheck.status).json(keyCheck.body);
+
+    const message = (req.body?.message || "").toString().trim();
+    if (!message) {
+      return res.status(400).json({ error: "message 가 비어있습니다." });
     }
 
-    const system = `
-당신은 '정책자금 AI 비서'입니다.
-- 한국어로 친절하고 실무적으로 답합니다.
-- 확정적 단정 대신, 조건/예외/필요서류/확인경로를 함께 안내합니다.
-- 마지막에 항상: "⚠️ 정확한 정보는 공고/기관 안내를 꼭 확인하세요." 문구를 포함합니다.
+    const systemGuide = `
+너는 '정책자금 AI 비서'다.
+- 사용자의 질문에 대해 이해하기 쉬운 한국어로 답한다.
+- 가능하면 '대상/자격 → 핵심요건 → 준비서류 → 신청흐름 → 주의사항' 순서로 정리한다.
+- 확정적 수치/조건은 공고 확인을 권고한다.
+- 너무 장황하지 않게, 실무적으로.
 `;
 
-    const { text } = await callOpenAIResponses({
-      input: [
-        { role: "system", content: system.trim() },
-        { role: "user", content: message.trim() },
-      ],
-      max_output_tokens: 900,
-    });
+    const input = [
+      {
+        role: "system",
+        content: [{ type: "text", text: systemGuide.trim() }],
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: message }],
+      },
+    ];
 
-    res.json({
-      ok: true,
-      reply: text,
-      model: OPENAI_MODEL,
+    const out = await callOpenAIResponses({ input, temperature: 0.6 });
+
+    return res.json({
+      reply:
+        out.text ||
+        "답변 생성에 실패했습니다. 질문을 조금 더 구체적으로 입력해 주세요.",
+      disclaimer: "⚠️ 정확한 정보는 반드시 해당 공고/기관 안내를 확인하세요.",
     });
-  } catch (e) {
-    console.error(e);
-    res.status(e.statusCode || 500).json({
-      ok: false,
-      error: e.message || "Server error",
-      detail: e.detail || undefined,
+  } catch (err) {
+    const status = err.status || 500;
+    return res.status(status).json({
+      error: err.message || "Server error",
+      hint:
+        status === 401
+          ? "OpenAI 키가 잘못됐거나 권한이 없습니다. 키를 재발급/교체 후 Redeploy 해주세요."
+          : status === 429
+          ? "요청이 많거나 한도 초과입니다. 잠시 후 다시 시도하세요."
+          : "Vercel Runtime Logs에서 에러 원인을 확인해 주세요.",
     });
   }
 });
 
-/**
- * POST /api/blog
- * body: {
- *   title?: string,
- *   topic?: string,
- *   keywords?: string[] | string,
- *   audience?: string,
- *   tone?: string
- * }
- */
+// Blog draft
 app.post("/api/blog", async (req, res) => {
   try {
-    const {
-      title = "",
-      topic = "",
-      keywords = [],
-      audience = "소상공인/자영업자",
-      tone = "친근하고 전문가 느낌",
-    } = req.body || {};
+    const keyCheck = requireKey();
+    if (!keyCheck.ok) return res.status(keyCheck.status).json(keyCheck.body);
 
-    const kw =
-      Array.isArray(keywords) ? keywords.join(", ") : String(keywords || "");
+    const title = (req.body?.title || "").toString().trim();
+    const topic = (req.body?.topic || "").toString().trim();
+    const keyword = (req.body?.keyword || "").toString().trim();
+
+    if (!title && !topic && !keyword) {
+      return res
+        .status(400)
+        .json({ error: "title/topic/keyword 중 하나는 필요합니다." });
+    }
 
     const prompt = `
-아래 조건으로 네이버 블로그용 글을 작성해줘.
+아래 정보를 바탕으로 '정책자금' 관련 네이버 블로그 글 초안을 한국어로 작성해줘.
 
-- 제목: ${title || "(네가 추천 제목도 3개 제안)"}
-- 주제: ${topic || "정책자금/정부지원금"}
-- 대상: ${audience}
-- 톤: ${tone}
-- 키워드(자연스럽게 분산 배치): ${kw || "(네가 적절히 선정)"}
+[요구사항]
+- 구조: 문제제기 → 정보제공 → 경험결합(사례 톤) → CTA(관심→행동→문의)
+- 너무 과장하지 말고, 실무자처럼.
+- 마지막에 '⚠️ 공고 확인' 문구 포함.
+- 길이: 1,200~1,800자 정도.
+- 소제목/불릿 적절히 사용.
 
-구성:
-1) 문제제기(후킹)
-2) 정보제공(핵심 포인트 5~7개)
-3) 경험/사례 느낌의 설명(현실적인 상황)
-4) CTA 3단계(관심유도 → 행동유도 → 직접문의유도)
-5) 마지막에 주의문구: "⚠️ 정확한 정보는 공고/기관 안내를 꼭 확인하세요."
-
-분량: 1,200~1,800자 정도
+[입력]
+제목: ${title || "(제목 미정)"}
+주제: ${topic || "(주제 미정)"}
+핵심키워드: ${keyword || "(키워드 미정)"}
 `;
 
-    const { text } = await callOpenAIResponses({
-      input: [{ role: "user", content: prompt.trim() }],
-      max_output_tokens: 1400,
-    });
+    const input = [
+      {
+        role: "system",
+        content: [{ type: "text", text: "너는 정책자금/지원사업 전문 블로그 작가다." }],
+      },
+      { role: "user", content: [{ type: "text", text: prompt.trim() }] },
+    ];
 
-    res.json({
-      ok: true,
-      blog: text,
-      model: OPENAI_MODEL,
+    const out = await callOpenAIResponses({ input, temperature: 0.7 });
+
+    return res.json({
+      title: title || "정책자금 정보 정리",
+      content:
+        out.text ||
+        "글 생성에 실패했습니다. title/topic/keyword 를 조금 더 구체적으로 입력해 주세요.",
+      disclaimer: "⚠️ 정확한 정보는 반드시 해당 공고/기관 안내를 확인하세요.",
     });
-  } catch (e) {
-    console.error(e);
-    res.status(e.statusCode || 500).json({
-      ok: false,
-      error: e.message || "Server error",
-      detail: e.detail || undefined,
+  } catch (err) {
+    const status = err.status || 500;
+    return res.status(status).json({
+      error: err.message || "Server error",
+      hint: "Vercel Runtime Logs에서 에러 원인을 확인해 주세요.",
     });
   }
 });
 
-/** ====== LISTEN (local only) ====== */
-const PORT = process.env.PORT || 3000;
-
-// Vercel에서는 보통 listen이 필요 없거나, 환경에 따라 다를 수 있어 조건부 처리
-if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`✅ Server running on http://localhost:${PORT}`);
-  });
+// local dev
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 }
 
-// Vercel/Serverless 호환을 위해 export
 module.exports = app;
