@@ -1,61 +1,76 @@
 // /api/chat.js
 const OpenAI = require("openai");
 
-// 1. 보안 설정 (누구나 접속 가능하게 허용)
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*"); 
+module.exports = async function handler(req, res) {
+  // 1. CORS 헤더 강제 설정 (어떤 상황에서도 반환되도록 맨 위에 배치)
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
 
-module.exports = async function handler(req, res) {
-  // 2. 기본 설정 적용
-  setCors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed", message: "POST 요청만 가능합니다." });
+  // 2. Preflight 요청 처리
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
   try {
-    // 3. API 키 확인
+    // 3. API Key 확인
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "Config Error", message: "API 키가 설정되지 않았습니다." });
+      throw new Error("환경 변수에 OPENAI_API_KEY가 설정되지 않았습니다.");
     }
 
-    // 4. 질문 내용 가져오기
-    let requestBody = req.body;
-    if (typeof requestBody === "string") {
+    // 4. 요청 데이터(Body) 파싱 - 가장 안전한 방법 사용
+    let body = req.body;
+    
+    // 만약 body가 없거나 빈 객체라면 문자열 파싱 시도
+    if (!body || (typeof body === 'object' && Object.keys(body).length === 0)) {
+        // Vercel 등에서 가끔 body가 제대로 파싱되지 않을 때를 대비
+        if (req.body && typeof req.body === 'string') {
+             body = JSON.parse(req.body);
+        }
+    }
+    
+    // 최종적으로 문자열인 경우 다시 파싱
+    if (typeof body === "string") {
       try {
-        requestBody = JSON.parse(requestBody);
+        body = JSON.parse(body);
       } catch (e) {
-        return res.status(400).json({ error: "JSON Error", message: "데이터 형식이 잘못되었습니다." });
+        throw new Error("전송된 데이터가 JSON 형식이 아닙니다. (" + body + ")");
       }
     }
 
-    const { message } = requestBody || {};
-    if (!message) return res.status(400).json({ error: "Missing Message", message: "질문 내용이 없습니다." });
+    const userMessage = body?.message || body?.topic; // 채팅(message)과 블로그(topic) 둘 다 대응
 
-    // 5. AI에게 질문하기
+    if (!userMessage) {
+       throw new Error("질문 내용(message)이 비어있습니다. 전달된 데이터: " + JSON.stringify(body));
+    }
+
+    // 5. OpenAI 호출
     const openai = new OpenAI({ apiKey: apiKey });
     
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // 빠르고 똑똑한 모델
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: "당신은 친절하고 유능한 '정책자금 상담 AI 비서'입니다. 사용자 질문에 대해 한국어로 전문적인 답변을 해주세요."
+          content: "당신은 친절하고 전문적인 '정책자금 AI 비서'입니다. 한국어로 답변해주세요."
         },
-        { role: "user", content: message },
+        { role: "user", content: userMessage },
       ],
     });
 
-    // 6. 답변 보내기
-    return res.status(200).json({ reply: completion.choices[0].message.content });
+    // 6. 성공 응답
+    const aiReply = completion.choices[0].message.content;
+    return res.status(200).json({ reply: aiReply, content: aiReply }); // chat.js와 blog.js 양쪽 호환
 
   } catch (error) {
-    console.error("에러 발생:", error);
-    return res.status(500).json({ error: "Server Error", message: "AI가 잠시 쉬고 있어요. 다시 시도해주세요." });
+    console.error("🔥 서버 에러 발생:", error);
+    
+    // ⚠️ 중요: 에러가 나도 500이 아니라 200으로 보내서, 브라우저가 에러 메시지를 읽을 수 있게 함
+    return res.status(200).json({ 
+      error: "서버 내부 오류", 
+      message: error.message, 
+      detail: error.toString() 
+    });
   }
 };
