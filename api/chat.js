@@ -1,6 +1,16 @@
 import OpenAI from "openai";
 
 export default async function handler(req, res) {
+  // ✅ CORS 허용 (이게 핵심)
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // ✅ preflight 요청 처리
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST only" });
   }
@@ -27,12 +37,12 @@ export default async function handler(req, res) {
       ],
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       reply: completion.choices[0].message.content,
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({
+    return res.status(500).json({
       error: "AI 호출 실패",
       detail: e.message,
     });
