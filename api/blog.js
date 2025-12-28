@@ -1,45 +1,51 @@
-const OpenAI = require("openai");
+// /api/blog.js
+const OpenAIImport = require("openai");
+const OpenAI = OpenAIImport.default || OpenAIImport;
 
-module.exports = async function handler(req, res) {
+function setCors(res) {
+  // 정확히 허용: "https://sinjawon007.imweb.me"
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
+module.exports = async function handler(req, res) {
+  setCors(res);
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "POST only" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   try {
     const { topic } = req.body || {};
-    if (!topic) {
-      return res.status(400).json({ error: "topic required" });
+    if (!topic) return res.status(400).json({ error: "topic required" });
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "OPENAI_API_KEY is missing in env" });
     }
 
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    const client = new OpenAI({ apiKey });
 
-    const response = await client.responses.create({
+    const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
-      input: [
+      messages: [
         {
           role: "system",
           content:
-            "정책자금 블로그 글을 SEO 최적화 구조(문제제기→정보제공→사례→CTA)로 작성하고 마지막에 주의문구를 포함하라.",
+            "정책자금 블로그 글을 '문제제기→정보제공→경험결합→CTA' 구조로 SEO 최적화로 작성해라. 마지막에 반드시 '⚠️ 정확한 정보는 공고를 꼭 확인하세요' 포함.",
         },
-        { role: "user", content: topic },
+        { role: "user", content: String(topic) },
       ],
     });
 
-    return res.status(200).json({
-      content: response.output_text,
-    });
+    const content = completion?.choices?.[0]?.message?.content || "";
+    return res.status(200).json({ content });
   } catch (e) {
     console.error(e);
     return res.status(500).json({
       error: "AI 호출 실패",
-      detail: e.message,
+      detail: e?.message || String(e),
     });
   }
 };
