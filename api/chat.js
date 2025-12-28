@@ -1,70 +1,61 @@
-// api/chat.js
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+// /api/chat.js
+const OpenAI = require("openai");
 
-const ALLOWED_ORIGINS = new Set([
-  "https://sinjawon007.imweb.me",
-  "https://www.sinjawon007.imweb.me",
-]);
-
-function setCors(req, res) {
-  const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-  res.setHeader("Vary", "Origin");
+// 1. 보안 설정 (누구나 접속 가능하게 허용)
+function setCors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*"); 
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 module.exports = async function handler(req, res) {
-  setCors(req, res);
-
+  // 2. 기본 설정 적용
+  setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST")
-    return res.status(405).json({ error: "POST only" });
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed", message: "POST 요청만 가능합니다." });
+  }
 
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
+    // 3. API 키 확인
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({
-        error: "GEMINI_API_KEY missing",
-      });
+      return res.status(500).json({ error: "Config Error", message: "API 키가 설정되지 않았습니다." });
     }
 
-    let body = req.body;
-    if (typeof body === "string") body = JSON.parse(body);
-
-    const message = body?.message;
-    if (!message) {
-      return res.status(400).json({ error: "message required" });
+    // 4. 질문 내용 가져오기
+    let requestBody = req.body;
+    if (typeof requestBody === "string") {
+      try {
+        requestBody = JSON.parse(requestBody);
+      } catch (e) {
+        return res.status(400).json({ error: "JSON Error", message: "데이터 형식이 잘못되었습니다." });
+      }
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+    const { message } = requestBody || {};
+    if (!message) return res.status(400).json({ error: "Missing Message", message: "질문 내용이 없습니다." });
+
+    // 5. AI에게 질문하기
+    const openai = new OpenAI({ apiKey: apiKey });
+    
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini", // 빠르고 똑똑한 모델
+      messages: [
+        {
+          role: "system",
+          content: "당신은 친절하고 유능한 '정책자금 상담 AI 비서'입니다. 사용자 질문에 대해 한국어로 전문적인 답변을 해주세요."
+        },
+        { role: "user", content: message },
+      ],
     });
 
-    const prompt = `
-너는 정책자금 전문 AI 비서다.
-한국 소상공인·중소기업 관점에서 이해하기 쉽게 설명하라.
-마지막 줄에 반드시 다음 문구를 포함하라:
+    // 6. 답변 보내기
+    return res.status(200).json({ reply: completion.choices[0].message.content });
 
-⚠️ 정확한 정보는 공고를 꼭 확인하세요
-
-질문:
-${message}
-`;
-
-    const result = await model.generateContent(prompt);
-    const reply = result.response.text();
-
-    return res.status(200).json({ reply });
-  } catch (e) {
-    return res.status(500).json({
-      error: "Gemini API error",
-      detail: e.message,
-    });
+  } catch (error) {
+    console.error("에러 발생:", error);
+    return res.status(500).json({ error: "Server Error", message: "AI가 잠시 쉬고 있어요. 다시 시도해주세요." });
   }
 };
