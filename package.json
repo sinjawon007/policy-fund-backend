@@ -1,8 +1,7 @@
 {
   "name": "policy-fund-backend",
-  "version": "1.0.0",
-  "private": true,
-  "description": "정책자금 AI 비서 백엔드 (OpenAI)",
+  "version": "1.1.0",
+  "description": "Policy funding AI assistant backend (Express + OpenAI Responses API)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -14,7 +13,6 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "openai": "^4.68.0"
+    "express": "^4.19.2"
   }
 }
