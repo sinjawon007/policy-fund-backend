@@ -1,0 +1,19 @@
+# Node modules
+node_modules/
+
+# 환경변수 (중요!)
+.env
+
+# 로그 파일
+*.log
+npm-debug.log*
+
+# OS 파일
+.DS_Store
+Thumbs.db
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
