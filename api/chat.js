@@ -1,76 +1,53 @@
 // /api/chat.js
-const OpenAI = require("openai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-module.exports = async function handler(req, res) {
-  // 1. CORS 헤더 강제 설정 (어떤 상황에서도 반환되도록 맨 위에 배치)
+function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
 
-  // 2. Preflight 요청 처리
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+module.exports = async function handler(req, res) {
+  setCors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   try {
-    // 3. API Key 확인
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error("환경 변수에 OPENAI_API_KEY가 설정되지 않았습니다.");
+      return res.status(500).json({ error: "GEMINI_API_KEY is missing" });
     }
 
-    // 4. 요청 데이터(Body) 파싱 - 가장 안전한 방법 사용
-    let body = req.body;
-    
-    // 만약 body가 없거나 빈 객체라면 문자열 파싱 시도
-    if (!body || (typeof body === 'object' && Object.keys(body).length === 0)) {
-        // Vercel 등에서 가끔 body가 제대로 파싱되지 않을 때를 대비
-        if (req.body && typeof req.body === 'string') {
-             body = JSON.parse(req.body);
-        }
-    }
-    
-    // 최종적으로 문자열인 경우 다시 파싱
-    if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch (e) {
-        throw new Error("전송된 데이터가 JSON 형식이 아닙니다. (" + body + ")");
-      }
-    }
+    // body 파싱 (Vercel에서 string으로 들어오는 경우 대비)
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    const message = body?.message?.trim();
+    if (!message) return res.status(400).json({ error: "message required" });
 
-    const userMessage = body?.message || body?.topic; // 채팅(message)과 블로그(topic) 둘 다 대응
+    const genAI = new GoogleGenerativeAI(apiKey);
 
-    if (!userMessage) {
-       throw new Error("질문 내용(message)이 비어있습니다. 전달된 데이터: " + JSON.stringify(body));
-    }
+    // ✅ 가장 호환 잘 되는 기본 모델 (안 되면 여기만 바꾸면 됨)
+    // "gemini-1.5-flash" 또는 "gemini-1.5-pro"가 보통 정상입니다.
+    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    const model = genAI.getGenerativeModel({ model: modelName });
 
-    // 5. OpenAI 호출
-    const openai = new OpenAI({ apiKey: apiKey });
-    
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: "당신은 친절하고 전문적인 '정책자금 AI 비서'입니다. 한국어로 답변해주세요."
-        },
-        { role: "user", content: userMessage },
-      ],
-    });
+    const system = [
+      "너는 '정책자금' 상담을 돕는 전문 AI 비서다.",
+      "답변은 한국어로, 항목/불릿으로 핵심부터 정리한다.",
+      "마지막 줄에 반드시: ⚠️ 정확한 정보는 공고를 꼭 확인하세요",
+    ].join("\n");
 
-    // 6. 성공 응답
-    const aiReply = completion.choices[0].message.content;
-    return res.status(200).json({ reply: aiReply, content: aiReply }); // chat.js와 blog.js 양쪽 호환
+    // ✅ Gemini 권장: generateContent에 system+user를 한 프롬프트로 넣기
+    const prompt = `SYSTEM:\n${system}\n\nUSER:\n${message}`;
 
-  } catch (error) {
-    console.error("🔥 서버 에러 발생:", error);
-    
-    // ⚠️ 중요: 에러가 나도 500이 아니라 200으로 보내서, 브라우저가 에러 메시지를 읽을 수 있게 함
-    return res.status(200).json({ 
-      error: "서버 내부 오류", 
-      message: error.message, 
-      detail: error.toString() 
+    const result = await model.generateContent(prompt);
+    const reply = result?.response?.text?.() || "";
+
+    return res.status(200).json({ reply });
+  } catch (e) {
+    console.error("Gemini error:", e);
+    return res.status(500).json({
+      error: "Gemini API error",
+      detail: e?.message || String(e),
     });
   }
 };
