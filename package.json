@@ -1,9 +1,5 @@
 {
-  "name": "policy-fund-backend",
-  "version": "1.0.0",
-  "private": true,
-  "type": "commonjs",
   "dependencies": {
-    "openai": "^4.0.0"
+    "openai": "^4.0.0" 
   }
 }
