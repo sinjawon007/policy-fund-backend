@@ -1,106 +1,21 @@
-// server.js
-// Express API server for Vercel
-// Endpoints:
-//   GET  /        -> health
-//   POST /api/chat -> policy Q&A
-//   POST /api/blog -> blog draft
-
 const express = require("express");
 const cors = require("cors");
+const OpenAI = require("openai");
 
 const app = express();
 
-// ---------- env ----------
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
-const PORT = process.env.PORT || 3000;
-
-// Allowed origins (comma-separated). Example:
-// ALLOWED_ORIGINS=https://sinjawon007.imweb.me,http://localhost:3000
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-// ---------- middleware ----------
+app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-app.use(
-  cors({
-    origin: function (origin, cb) {
-      // allow non-browser tools (curl/postman) with no origin
-      if (!origin) return cb(null, true);
-      if (ALLOWED_ORIGINS.includes("*")) return cb(null, true);
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS: " + origin));
-    },
-    credentials: false,
-  })
-);
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-// ---------- helpers ----------
-function requireKey() {
-  if (!OPENAI_API_KEY) {
-    return {
-      ok: false,
-      status: 500,
-      body: {
-        error:
-          "OPENAI_API_KEY is missing. Set it in Vercel Project Settings → Environment Variables, then Redeploy.",
-      },
-    };
-  }
-  return { ok: true };
+if (!OPENAI_API_KEY) {
+  console.warn("[WARN] OPENAI_API_KEY is not set.");
 }
 
-async function callOpenAIResponses({ input, temperature = 0.7 }) {
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      input,
-      temperature,
-    }),
-  });
+const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg =
-      data?.error?.message ||
-      data?.message ||
-      `OpenAI API error (HTTP ${res.status})`;
-    const err = new Error(msg);
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
-
-  // Try to extract text safely
-  // Many responses include output_text convenience field on some SDKs,
-  // but raw REST returns structured output. We'll extract common fields.
-  let text = "";
-
-  // Some responses may have: data.output[0].content[0].text
-  if (Array.isArray(data.output) && data.output.length > 0) {
-    const first = data.output[0];
-    if (Array.isArray(first.content) && first.content.length > 0) {
-      const c0 = first.content[0];
-      text = c0?.text || c0?.value || "";
-    }
-  }
-
-  // Fallbacks
-  if (!text && typeof data.output_text === "string") text = data.output_text;
-  if (!text && typeof data?.text === "string") text = data.text;
-
-  return { raw: data, text: text || "" };
-}
-
-// ---------- routes ----------
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -109,119 +24,85 @@ app.get("/", (req, res) => {
   });
 });
 
-// Q&A chat
+// (선택) GET으로 들어오면 안내만
+app.get("/api/chat", (req, res) => {
+  res.status(405).json({ error: "Use POST /api/chat with JSON { message }" });
+});
+
 app.post("/api/chat", async (req, res) => {
   try {
-    const keyCheck = requireKey();
-    if (!keyCheck.ok) return res.status(keyCheck.status).json(keyCheck.body);
-
-    const message = (req.body?.message || "").toString().trim();
-    if (!message) {
-      return res.status(400).json({ error: "message 가 비어있습니다." });
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "OPENAI_API_KEY not set on server" });
     }
 
-    const systemGuide = `
-너는 '정책자금 AI 비서'다.
-- 사용자의 질문에 대해 이해하기 쉬운 한국어로 답한다.
-- 가능하면 '대상/자격 → 핵심요건 → 준비서류 → 신청흐름 → 주의사항' 순서로 정리한다.
-- 확정적 수치/조건은 공고 확인을 권고한다.
-- 너무 장황하지 않게, 실무적으로.
-`;
+    const { message } = req.body || {};
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "message is required (string)" });
+    }
 
-    const input = [
-      {
-        role: "system",
-        content: [{ type: "text", text: systemGuide.trim() }],
-      },
-      {
-        role: "user",
-        content: [{ type: "text", text: message }],
-      },
-    ];
-
-    const out = await callOpenAIResponses({ input, temperature: 0.6 });
-
-    return res.json({
-      reply:
-        out.text ||
-        "답변 생성에 실패했습니다. 질문을 조금 더 구체적으로 입력해 주세요.",
-      disclaimer: "⚠️ 정확한 정보는 반드시 해당 공고/기관 안내를 확인하세요.",
+    // ✅ OpenAI Responses API: input은 문자열로 보내면 됨 (type:'text' 쓰면 400남)
+    const r = await client.responses.create({
+      model: OPENAI_MODEL,
+      input: message,
+      // 필요하면 톤/가이드 추가 가능
+      instructions:
+        "너는 한국 정책자금 상담 보조 AI다. 과장하지 말고, 확인이 필요한 부분은 '공고 확인 필요'라고 명확히 말해라. 답변은 한국어로 간결하게.",
     });
-  } catch (err) {
-    const status = err.status || 500;
-    return res.status(status).json({
-      error: err.message || "Server error",
-      hint:
-        status === 401
-          ? "OpenAI 키가 잘못됐거나 권한이 없습니다. 키를 재발급/교체 후 Redeploy 해주세요."
-          : status === 429
-          ? "요청이 많거나 한도 초과입니다. 잠시 후 다시 시도하세요."
-          : "Vercel Runtime Logs에서 에러 원인을 확인해 주세요.",
+
+    const answer = r.output_text || "";
+    return res.json({ ok: true, answer });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({
+      error: e?.message || "Server error",
     });
   }
 });
 
-// Blog draft
 app.post("/api/blog", async (req, res) => {
   try {
-    const keyCheck = requireKey();
-    if (!keyCheck.ok) return res.status(keyCheck.status).json(keyCheck.body);
-
-    const title = (req.body?.title || "").toString().trim();
-    const topic = (req.body?.topic || "").toString().trim();
-    const keyword = (req.body?.keyword || "").toString().trim();
-
-    if (!title && !topic && !keyword) {
-      return res
-        .status(400)
-        .json({ error: "title/topic/keyword 중 하나는 필요합니다." });
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: "OPENAI_API_KEY not set on server" });
     }
 
+    const { topic, keywords, tone, length } = req.body || {};
+    const safeTopic = (topic || "").toString().trim();
+
+    if (!safeTopic) {
+      return res.status(400).json({ error: "topic is required" });
+    }
+
+    const kw = Array.isArray(keywords) ? keywords.join(", ") : (keywords || "");
+    const t = (tone || "친근하고 신뢰감 있게").toString();
+    const len = (length || "1200~1800자").toString();
+
     const prompt = `
-아래 정보를 바탕으로 '정책자금' 관련 네이버 블로그 글 초안을 한국어로 작성해줘.
+아래 조건으로 네이버 블로그 글을 작성해줘.
 
-[요구사항]
-- 구조: 문제제기 → 정보제공 → 경험결합(사례 톤) → CTA(관심→행동→문의)
-- 너무 과장하지 말고, 실무자처럼.
-- 마지막에 '⚠️ 공고 확인' 문구 포함.
-- 길이: 1,200~1,800자 정도.
-- 소제목/불릿 적절히 사용.
+- 주제: ${safeTopic}
+- 키워드(자연스럽게 포함): ${kw}
+- 톤: ${t}
+- 분량: ${len}
+- 구성: 문제제기 → 정보제공 → 경험결합 → CTA(관심유도→행동유도→직접문의유도)
+- 주의: 허위/과장 금지, 정확한 정보는 공고 확인 안내 포함
+- 출력: 제목 3개 + 본문 1개(소제목 포함) + 해시태그 10개
+`.trim();
 
-[입력]
-제목: ${title || "(제목 미정)"}
-주제: ${topic || "(주제 미정)"}
-핵심키워드: ${keyword || "(키워드 미정)"}
-`;
-
-    const input = [
-      {
-        role: "system",
-        content: [{ type: "text", text: "너는 정책자금/지원사업 전문 블로그 작가다." }],
-      },
-      { role: "user", content: [{ type: "text", text: prompt.trim() }] },
-    ];
-
-    const out = await callOpenAIResponses({ input, temperature: 0.7 });
-
-    return res.json({
-      title: title || "정책자금 정보 정리",
-      content:
-        out.text ||
-        "글 생성에 실패했습니다. title/topic/keyword 를 조금 더 구체적으로 입력해 주세요.",
-      disclaimer: "⚠️ 정확한 정보는 반드시 해당 공고/기관 안내를 확인하세요.",
+    const r = await client.responses.create({
+      model: OPENAI_MODEL,
+      input: prompt,
     });
-  } catch (err) {
-    const status = err.status || 500;
-    return res.status(status).json({
-      error: err.message || "Server error",
-      hint: "Vercel Runtime Logs에서 에러 원인을 확인해 주세요.",
-    });
+
+    return res.json({ ok: true, content: r.output_text || "" });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: e?.message || "Server error" });
   }
 });
 
-// local dev
+// Vercel/로컬 모두 대응
+const PORT = process.env.PORT || 3000;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`Server listening on ${PORT}`));
 }
-
 module.exports = app;
